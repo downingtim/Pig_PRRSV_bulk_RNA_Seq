@@ -1,0 +1,57 @@
+from pathlib import Path
+
+configfile: "config.yaml"
+SAMPLEDIR = Path(config.get("kallisto", {}).get("sampledir", "trimmed"))
+SAMPLE_PARENT = str(Path(*SAMPLEDIR.parts[1:]))
+if SAMPLE_PARENT != ".":
+   SAMPLE_PARENT = SAMPLE_PARENT + "/"
+else:
+   SAMPLE_PARENT = ""
+SAMPLEDIR = str(SAMPLEDIR)
+print(SAMPLE_PARENT)
+print(SAMPLEDIR)
+
+INDEX = config.get("kallisto", {}).get("index", "index/index.idx")
+OUTDIR = config.get("kallisto", {}).get("outdir", "kallisto")
+SAMPLES=config["samples"]
+
+#SAMPLEDIR=config["sampledir"]
+#OUTDIR=config["outdir"]
+#INDEX=config["index"]
+
+#INDEX="index/gallus"
+
+rule all:
+   input:
+        abundance=expand(OUTDIR +"/"+ SAMPLE_PARENT +"{ID}/abundance.tsv",ID=SAMPLES),
+        plot=expand(OUTDIR +"/"+ SAMPLE_PARENT +"{ID}/abundance.png",ID=SAMPLES),
+   shell: "echo Done"
+
+
+rule kallisto:
+   input:
+        f1=SAMPLEDIR+"/{ID}/{ID}_1.fq.gz",
+        f2=SAMPLEDIR+"/{ID}/{ID}_2.fq.gz",
+   output:
+        abundance=OUTDIR +"/"+ SAMPLE_PARENT + "{ID}/abundance.tsv"
+   log:
+        stdout=OUTDIR +"/" + SAMPLE_PARENT + "{ID}/log/stdout.txt",
+        stderr=OUTDIR +"/" + SAMPLE_PARENT + "{ID}/log/stderr.txt",
+   threads: 12
+   shell:
+      """
+      mkdir -p {OUTDIR}/{SAMPLE_PARENT}{wildcards.ID}/log 
+      kallisto quant -i {INDEX} -o {OUTDIR}/{SAMPLE_PARENT}{wildcards.ID} -t 12 -b 100 {input.f1} {input.f2} >{log.stdout} 2>{log.stderr}
+      """
+
+rule plot:
+   input:
+        abundance=OUTDIR +"/"+ SAMPLE_PARENT +"{ID}/abundance.tsv"
+   output:
+        plot=OUTDIR +"/"+ SAMPLE_PARENT +"{ID}/abundance.png"
+   shell:
+      """
+      set +e
+      Rscript  ./abundanceplot.R {input.abundance} {output.plot} 
+      exit 0
+      """

@@ -1,0 +1,586 @@
+
+# 1 - Setup, grouping & data import
+# 2 - PCA plots
+# 3 - get biomart data
+# 4 - limma exploration
+# 5 - Sleuth across genes initial
+
+########## 1 Setup, grouping & data import ###################
+if (!require("BiocManager", quietly = T)) { 
+    install.packages("BiocManager") }
+
+#install.packages("aggregation") # for genes from tx
+library(aggregation)
+#install.packages("devtools")
+library(devtools)
+#BiocManager::install("rhdf5")
+library(rhdf5)
+#devtools::install_github("pachterlab/sleuth")
+library(sleuth) #vignette('intro', package = 'sleuth')
+library(ggplot2) # v3.5.2
+library(ggrepel)
+library(dplyr)
+library(tidyr)
+library(dbplyr)
+library(ggpubr)
+library(grid) # v4.4.1
+library(gridExtra)
+#BiocManager::install("limma")
+library(limma) # v3.60.6
+#BiocManager::install("edgeR")
+library(edgeR)
+#BiocManager::install("tximport")
+library(tximport)
+library(readr)
+library(ggvenn) #
+library(ggVennDiagram) # v1.5.2
+library(VennDiagram)
+# BiocManager::install(c("biomaRt", "BiocFileCache"), update = TRUE)
+# BiocManager::install("biomaRt")
+library(biomaRt)
+
+
+# [1] Load a table describing our sample, conditions
+# and the source directories such that the 1st column
+# contains the sample names, the middle column(s)
+# contain the conditions, and the last column has the
+# folder containing the kallisto output
+
+s2c <- read.csv("table.csv", header=T, sep="\t")
+str(s2c) # check table 
+
+# reallocate table into groups: 
+s2c_c <- subset(s2c, condition=="0") # 
+s2c_3 <- subset(s2c, condition=="3") # 
+s2c_7 <- subset(s2c, condition=="7") # 
+s2c_10 <- subset(s2c, condition=="10") # 
+s2c_14 <- subset(s2c, condition=="14") # 
+s2c_21 <- subset(s2c, condition=="21") # 
+s2c_28 <- subset(s2c, condition=="28") # 
+s2c_35 <- subset(s2c, condition=="35") # 
+
+# Now, we will use sleuth_prep() to make an object 
+# with our experiment info, model and groups.
+so <- sleuth_prep(s2c, extra_bootstrap_summary=T, read_bootstrap_tpm=T)
+# XX targets pass filter
+
+# all sample
+pdf("pca.pdf", width=5, height=8)
+plot_pca(so, color_by = 'condition', text_labels=T) # do PCA
+dev.off()
+
+######## 2 PCA plots ##################################
+
+# Get TPM values, filter, make PCA plots
+
+tpm_data <- so$obs_norm %>% # extract TPM values
+  dplyr::select(target_id, sample, tpm) %>%
+  tidyr::pivot_wider(names_from = sample, values_from = tpm)
+# Convert to matrix format for PCA
+tpm_matrix <- as.matrix(tpm_data[,-1])
+rownames(tpm_matrix) <- tpm_data$target_id
+var_per_gene <- apply(tpm_matrix, 1, var) # filter for non-zero values
+tpm_matrix_filtered <- tpm_matrix[var_per_gene > 0, ]
+pca_result <- prcomp(t(tpm_matrix_filtered), scale = T)
+pca_df <- as.data.frame(pca_result$x)
+pca_df$sample <- rownames(pca_df)
+pca_df <- left_join(pca_df, so$sample_to_covariates, by = "sample")
+var_explained <- round(100 * pca_result$sdev^2 / sum(pca_result$sdev^2), 1)
+unique_combinations <- unique(pca_df$condition)
+
+library(ggforce) # Required for geom_mark_ellipse
+# 1. Define Color Palette
+viridis_8 <- hcl.colors(n = 8, palette = "viridis")
+base_colors <- c("0" = viridis_8[1], "3" = viridis_8[2], "7" = viridis_8[3],
+                 "10" = viridis_8[4], "14" = viridis_8[5], "21" = viridis_8[6],
+                 "28" = viridis_8[7], "35" = viridis_8[8])
+color_palette <- base_colors[as.character(unique_combinations)]
+oval_stats <- pca_df %>%
+  group_by(condition) %>%
+  summarise(
+    # PC1 & PC2
+    mean_PC1 = mean(PC1), mean_PC2 = mean(PC2),
+    sd_PC1   = ifelse(is.na(sd(PC1)) || sd(PC1) == 0, 0.5, sd(PC1) * 1.5),
+    sd_PC2   = ifelse(is.na(sd(PC2)) || sd(PC2) == 0, 0.5, sd(PC2) * 1.5),
+    
+    # PC3 & PC4
+    mean_PC3 = mean(PC3), mean_PC4 = mean(PC4),
+    sd_PC3   = ifelse(is.na(sd(PC3)) || sd(PC3) == 0, 0.5, sd(PC3) * 1.5),
+    sd_PC4   = ifelse(is.na(sd(PC4)) || sd(PC4) == 0, 0.5, sd(PC4) * 1.5)
+  )
+
+# Define Color Palette
+viridis_8 <- hcl.colors(n = 8, palette = "viridis")
+base_colors <- c("0" = viridis_8[1], "3" = viridis_8[2], "7" = viridis_8[3],
+                 "10" = viridis_8[4], "14" = viridis_8[5], "21" = viridis_8[6],
+                 "28" = viridis_8[7], "35" = viridis_8[8])
+color_palette <- base_colors[as.character(unique_combinations)]
+
+# --- PLOT 1: PC1 vs PC2 ---
+pdf("LIMMA/PC1.PC2.pdf", width=8, height=5)
+p <- ggplot(pca_df, aes(x = PC1, y = PC2, color = factor(condition), fill = factor(condition))) +
+  geom_point(size = 5, alpha = 0.5) +
+  geom_text(aes(label = condition), color = "black", size = 4) +
+  scale_color_manual(values = color_palette, name = "Condition") +
+  scale_fill_manual(values = color_palette, name = "Condition") +
+  labs(x = paste0("PC1 (", var_explained[1], "%)"), y = paste0("PC2 (", var_explained[2], "%)")) +
+  theme_bw() + 
+  theme(axis.text = element_text(size = 16), axis.title = element_text(size = 20),
+        legend.text = element_text(size = 20), legend.title = element_text(size = 21))
+print(p)
+dev.off()
+ggsave("LIMMA/PC1.PC2.png", plot = p, width = 8, height = 5, dpi = 300)
+
+pdf("LIMMA/PC3.PC4.pdf", width=8, height=5)
+p2 <- ggplot(pca_df, aes(x = PC3, y = PC4, color = factor(condition), fill = factor(condition))) +
+  geom_point(size = 5, alpha = 0.5) +
+  geom_text(aes(label = condition), color = "black", size = 4) +
+  scale_color_manual(values = color_palette, name = "Condition") +
+  scale_fill_manual(values = color_palette, name = "Condition") +
+  labs(x = paste0("PC3 (", var_explained[3], "%)"), y = paste0("PC4 (", var_explained[4], "%)")) +
+  theme_bw() + 
+  theme(axis.text = element_text(size = 16), axis.title = element_text(size = 20),
+        legend.text = element_text(size = 20), legend.title = element_text(size = 21))
+print(p2)
+dev.off()
+ggsave("LIMMA/PC3.PC4.png", plot = p2, width = 8, height = 5, dpi = 300)
+
+pdf("LIMMA/PC1.PC4.pdf", width=8, height=5)
+p14 <- ggplot(pca_df, aes(x = PC1, y = PC4, color = factor(condition), fill = factor(condition))) +
+  geom_point(size = 5, alpha = 0.5) +
+  geom_text(aes(label = condition), color = "black", size = 4) +
+  scale_color_manual(values = color_palette, name = "Condition") +
+  scale_fill_manual(values = color_palette, name = "Condition") +
+  labs(x = paste0("PC1 (", var_explained[1], "%)"),
+       y = paste0("PC4 (", var_explained[4], "%)")) +
+  theme_bw() + 
+  theme(axis.text = element_text(size = 16), axis.title = element_text(size = 20),
+        legend.text = element_text(size = 20), legend.title = element_text(size = 21))
+print(p14)
+dev.off()
+ggsave("LIMMA/PC1.PC4.png", plot = p14, width = 8, height = 5, dpi = 300)
+
+
+# --- PLOT 4: PC2 vs PC4 ---
+pdf("LIMMA/PC2.PC4.pdf", width=8, height=5)
+p24 <- ggplot(pca_df, aes(x = PC2, y = PC4, color = factor(condition), fill = factor(condition))) +
+   geom_point(size = 5, alpha = 0.5) +
+  geom_text(aes(label = condition), color = "black", size = 4) +
+  scale_color_manual(values = color_palette, name = "Condition") +
+  scale_fill_manual(values = color_palette, name = "Condition") +
+  labs(x = paste0("PC2 (", var_explained[2], "%)"),
+       y = paste0("PC4 (", var_explained[4], "%)")) +
+  theme_bw() + 
+  theme(axis.text = element_text(size = 16), axis.title = element_text(size = 20),
+        legend.text = element_text(size = 20), legend.title = element_text(size = 21))
+print(p24)
+dev.off()
+ggsave("LIMMA/PC2.PC4.png", plot = p24, width = 8, height = 5, dpi = 300)
+
+pdf("plot_sample_heatmap.pdf", width=11, height=11)
+plot_sample_heatmap(so ,use_filtered = T, color_high = "white",
+  color_low = "dodgerblue", x_axis_angle = 50,
+  annotation_cols=setdiff(colnames(so$sample_to_covariates), "sample"),
+  cluster_bool = T)
+dev.off()
+
+####### 3 get biomart data ##########################
+
+# Let's test across genes  
+# We need to map the isoforms to genes with BiomaRt
+# Note we need to have annotation matching our reference cDNAs
+
+mart <- biomaRt::useMart(biomart = "ENSEMBL_MART_ENSEMBL",
+  dataset = "sscrofa_gene_ensembl",
+  host = 'https://sep2025.archive.ensembl.org/')
+str(mart) # check it worked # 3161
+t2g <- biomaRt::getBM(attributes = c("ensembl_transcript_id", 
+      "transcript_version", "ensembl_gene_id", "external_gene_name",
+            "description", "transcript_biotype"), mart = mart)
+str(t2g) # 60273 rows of:
+        # ensembl_transcript_id
+        # ensembl_gene_id
+        # external_gene_name
+#  rename the transcripts
+t2g <- dplyr::rename(t2g, target_id = ensembl_transcript_id,
+  ens_gene = ensembl_gene_id, ext_gene = external_gene_name)
+t2g$target_id <- paste(t2g$target_id, t2g$transcript_version,sep=".") # Re-name
+str(t2g) # 60,440
+
+############ 4 limma exploration ########################
+
+# transcripts first
+#  Examine the TPM data using tximport  
+files = paste(s2c$path, "abundance.h5", sep="/")
+
+# Import Kallisto abundance.h5 files with tximport
+txi.kallisto <- tximport(files, type = "kallisto", txOut = T)
+str(txi.kallisto)
+head(txi.kallisto$counts)
+y <- DGEList(txi.kallisto$counts)
+dim(y) # check
+full <- read.csv("table.csv", header=T, sep="\t") # metadata
+full$condition <- factor(full$condition)
+full$day <- as.numeric(as.character(full$condition))
+condition <- factor(full$condition,
+                    levels = c(0,3,7,10,14,21,35))
+
+# Treat day as a factor
+design <- model.matrix(~0 + condition, data=full)
+cont <- makeContrasts(
+  D3_vs_D0 = condition3-condition0,
+  D7_vs_D0 = condition7-condition0,
+  D14_vs_D0 = condition14-condition0,
+  D21_vs_D0 = condition21-condition0,
+  D28_vs_D0 = condition28-condition0,
+  D35_vs_D0 = condition35-condition0,
+  levels=design ) 
+# filtering using the design information:
+keep <- filterByExpr(y, design)
+y <- y[keep, ]
+str(y) # check -> 29,486 transcripts 
+y <- calcNormFactors(y) # normalize and run voom transformation
+v <- voom(y, design) # v is now ready for lmFit()  
+
+fit <- lmFit(v, design) # eBayes stands for empirical Bayes
+fitm <- eBayes(fit, trend=T) # test comparison
+str(fitm)
+pdf("plotSA.limma.pdf")
+plotSA(fitm) # we have a variance trend, so keep trend=T in eBayes()
+dev.off()
+results <- topTable(fitm, n=dim(fitm$coefficients)[1])
+
+fit2 <- contrasts.fit(fit, cont) # main comparison
+fit2 <- eBayes(fit2, trend=T) # get p/w comparison
+res_D3 <- topTable(fit2, coef="D3_vs_D0", number=Inf)
+res_D7 <- topTable(fit2, coef="D7_vs_D0", number=Inf)
+res_D10 <- topTable(fit2, coef="D7_vs_D0", number=Inf)
+res_D14 <- topTable(fit2, coef="D14_vs_D0", number=Inf)
+res_D21 <- topTable(fit2, coef="D21_vs_D0", number=Inf)
+res_D28 <- topTable(fit2, coef="D28_vs_D0", number=Inf)
+res_D35 <- topTable(fit2, coef="D35_vs_D0", number=Inf)
+
+dim(res_D3)  # 4 DE
+dim(res_D7)  # 2 DE
+dim(res_D14) # 2 DE
+dim(res_D10) # 2 DE 
+dim(res_D21) # 471 DE 
+dim(res_D28) # 2 DE 
+dim(res_D35) # 3 DE
+
+write.csv(res_D3, "limma.res_D3.csv") # XXX transcripts 
+write.csv(res_D7, "limma.res_D7.csv") # XXX transcripts 
+write.csv(res_D10, "limma.res_D10.csv") # XXX transcripts 
+write.csv(res_D14, "limma.res_D14.csv") # XXX transcripts 
+write.csv(res_D21, "limma.res_D21.csv") # XXX transcripts 
+write.csv(res_D28, "limma.res_D28.csv") # XXX transcripts 
+write.csv(res_D35, "limma.res_D35.csv") # XXX transcripts 
+
+dim(subset(res_D3, adj.P.Val<=0.05))
+dim(subset(res_D7, adj.P.Val<=0.05))
+dim(subset(res_D10, adj.P.Val<=0.05))
+dim(subset(res_D14, adj.P.Val<=0.05))
+dim(subset(res_D21, adj.P.Val<=0.05))
+dim(subset(res_D28, adj.P.Val<=0.05))
+dim(subset(res_D35, adj.P.Val<=0.05))
+
+summary(res_D3$adj.P.Val)
+summary(res_D7$adj.P.Val)
+summary(res_D10$adj.P.Val)
+summary(res_D14$adj.P.Val)
+summary(res_D21$adj.P.Val)
+summary(res_D28$adj.P.Val)
+summary(res_D35$adj.P.Val)
+
+panel.cor <- function(x, y, digits=2, prefix="", cex.cor, ...) {
+    usr <- par("usr")
+    on.exit(par(usr))
+    par(usr = c(0, 1, 0, 1))
+    Cor <- abs(cor(x, y)) # Remove abs function if desired
+    txt <- paste0(prefix, format(c(Cor, 0.123456789), digits = digits)[1])
+    if(missing(cex.cor)) {  cex.cor <- 1 + 0.4 / strwidth(txt)  }
+    text(0.5, 0.5, txt, cex = 1 + cex.cor * Cor) 
+    } # Resize the text by level of correlation
+
+pdf("pairs.limma.pdf", width=6, height=6)
+pairs( results[,1:4], cex=0.1, upper.panel = panel.cor,
+       lower.panel = panel.smooth, cex.labels = 1.5)
+dev.off()
+
+# make gene-level volcano plots 
+
+make_volcano <- function(results,  comparison,  t2g,
+                         fdr_cutoff = 0.05, logfc_cutoff = 1.39) {
+  transcript_ids <- rownames(results)
+  if (grepl("\\.", transcript_ids[1])) {
+    results$target_id <- rownames(results)
+    results_with_genes <- left_join(
+      data.frame(  target_id = rownames(results),
+        results,  row.names = NULL ),
+      t2g %>% dplyr::select(
+        target_id,  ens_gene,   ext_gene  ), by = "target_id"  )
+  } else { results$ensembl_transcript_id <- rownames(results)
+    results_with_genes <- left_join(
+      data.frame( ensembl_transcript_id = rownames(results),
+        results,  row.names = NULL ),
+      t2g %>% dplyr::select(
+        ensembl_transcript_id = target_id, ens_gene,
+        ext_gene  ), by = "ensembl_transcript_id"  )  }
+  results_with_genes$gene_label <- ifelse(
+    !is.na(results_with_genes$ext_gene) &
+      results_with_genes$ext_gene != "",
+    results_with_genes$ext_gene,
+    ifelse( !is.na(results_with_genes$ens_gene) &
+        results_with_genes$ens_gene != "",
+      results_with_genes$ens_gene,
+      ifelse( grepl("\\.", transcript_ids[1]),
+        results_with_genes$target_id,
+        results_with_genes$ensembl_transcript_id)  ))
+  # Make infection-induced genes positive
+  results_with_genes$logFC <- -results_with_genes$logFC
+  results_with_genes$significant <- ifelse(
+    results_with_genes$adj.P.Val < fdr_cutoff &
+      abs(results_with_genes$logFC) > logfc_cutoff,
+    "Significant",   "Not"  )
+  top_genes <- results_with_genes %>%
+    filter(significant == "Significant")
+  cat(  comparison, ":",  nrow(top_genes),  "DE transcripts\n" )
+  write.csv(  results_with_genes,
+    paste0(comparison, ".all.csv"),   row.names = FALSE  )
+  write.csv(  top_genes,
+    paste0(comparison, ".DE.csv"), row.names = FALSE )
+top_genes2 <- top_genes %>% arrange(adj.P.Val) %>% slice_head(n=10)
+
+  pdf(paste0(comparison, ".volcano.pdf"), width = 6,height =4)
+  p <- ggplot(  results_with_genes,
+    aes( x = logFC, y = -log10(adj.P.Val),color = significant )) +
+    geom_point(  shape = 1, size = 1.2, alpha = 0.2) +
+    geom_hline( yintercept = -log10(fdr_cutoff),
+      linetype = "dashed", color = "darkgray" ) +
+    geom_vline( xintercept = c( -logfc_cutoff, logfc_cutoff),
+      linetype = "dashed", color = "darkgray" ) +
+    scale_color_manual(values = c(Significant="red",Not ="black" ) ) +
+    geom_text_repel(  data = top_genes2,
+      aes(label=gene_label),box.padding=0.4,min.segment.length=0,
+      max.overlaps =220, force=10, size = 6 ) +
+    labs( title = paste0(comparison, " vs D0"),
+      x = "log2(FC)", y = "-log10(FDR)")  +theme_bw()+ #+ xlim(-7, 7)
+    theme(  legend.position = "none",
+      plot.title = element_text( size = 16, face = "bold" ),
+      axis.title = element_text(size = 14),
+      axis.text = element_text(size = 12) )
+  print(p)
+  dev.off()
+  return(results_with_genes) }
+
+# do plots and get data
+vol_D3  <- make_volcano(res_D3,  "D3",  t2g)
+vol_D7  <- make_volcano(res_D7,  "D7",  t2g)
+vol_D10  <- make_volcano(res_D10,  "D10",  t2g)
+vol_D14 <- make_volcano(res_D14, "D14", t2g)
+vol_D21 <- make_volcano(res_D21, "D21", t2g)
+vol_D28 <- make_volcano(res_D28, "D28", t2g)
+vol_D35 <- make_volcano(res_D35, "D35", t2g)
+
+ d3_de = subset( res_D3, adj.P.Val<=0.05 & (logFC > 1.39| logFC < -1.39) )
+ d7_de = subset( res_D7, adj.P.Val<=0.05 & (logFC > 1.39 | logFC < -1.39) )
+d10_de = subset(res_D10, adj.P.Val<=0.05 & (logFC > 1.39 | logFC < -1.39) )
+d14_de = subset(res_D14, adj.P.Val<=0.05 & (logFC > 1.39 | logFC < -1.39) )
+d21_de = subset(res_D21, adj.P.Val<=0.05 & (logFC > 1.39 | logFC < -1.39) )
+d28_de = subset(res_D28, adj.P.Val<=0.05 & (logFC > 1.39 | logFC < -1.39) )
+d35_de = subset(res_D35, adj.P.Val<=0.05 & (logFC > 1.39 | logFC < -1.39) )
+
+intersect(rownames(d3_de), rownames(d7_de))
+
+# get all unique DE get, min logFC
+# d7_de, d10_de, d14_de, d28_de = duplicate
+rownames(rbind(d3_de, d35_de)) %in% rownames(d21_de)
+# only the top on in d3_de
+
+all_de <- rbind(d3_de[1,],  d21_de )
+all_de <- all_de[order(rownames(all_de)), ]
+dim(all_de)
+head(all_de) # 471 genes
+
+vol_all <- make_volcano(all_de, "all", t2g) # not good
+
+# ---------------------------------------------------------
+# Plot expression trajectories for all DE genes
+#
+# Assumes:
+#   all_de = DE results table
+#   rownames(all_de) = gene IDs
+#   v = voom object
+#   full = sample metadata
+#
+# Produces:
+#   DE_gene_expression_panels.pdf
+#   DE_gene_expression_panels.png
+#
+# Layout:
+#   3 columns
+#   ~157 rows (471 genes)
+#   free y-axis per gene
+#   coloured by day
+# ---------------------------------------------------------
+
+colnames(v$E) <- full$sample
+
+viridis_8 <- hcl.colors(8,"viridis")
+
+base_colors <- c( "D0"=viridis_8[1], "D3"=viridis_8[2],
+  "D7"=viridis_8[3],  "D10"=viridis_8[4], "D14"=viridis_8[5],
+  "D21"=viridis_8[6],  "D28"=viridis_8[7],  "D35"=viridis_8[8] )
+
+gene_lookup <- t2g %>%  dplyr::select(target_id,ens_gene,ext_gene) %>%
+  distinct()
+
+gene_lookup$symbol <- ifelse(
+  !is.na(gene_lookup$ext_gene) & gene_lookup$ext_gene!="",
+  gene_lookup$ext_gene, gene_lookup$ens_gene )
+
+expr_mat <- as.data.frame(v$E)
+expr_mat$gene <- rownames(expr_mat)
+expr_mat <- expr_mat %>%   filter(gene %in% rownames(all_de))
+
+if(grepl("^ENSSSCT",rownames(all_de)[1])){
+  expr_mat <- expr_mat %>%    left_join(
+      gene_lookup %>%     dplyr::select(target_id,symbol),
+      by=c("gene"="target_id")  ) }else{
+  expr_mat <- expr_mat %>%    left_join(
+      gene_lookup %>%        dplyr::select(ens_gene,symbol),
+      by=c("gene"="ens_gene") ) }
+
+expr_mat$plot_name <- ifelse(
+  is.na(expr_mat$symbol) | expr_mat$symbol=="",
+  expr_mat$gene,  paste0(expr_mat$symbol," | ",expr_mat$gene))
+
+expr_long <- expr_mat %>%   pivot_longer(
+    cols=-c(gene,symbol,plot_name),
+    names_to="sample",    values_to="expression"
+  ) %>%  left_join( full[,c("sample","condition")],
+    by="sample"  )
+
+expr_long$day <- factor( paste0("D",expr_long$condition),
+  levels=c(    "D0","D3","D7","D10","D14","D21","D28","D35")) 
+
+expr_cluster <- expr_long %>%  group_by(gene,day) %>%
+  summarise(    mean_expr=mean(expression,na.rm=TRUE),
+    .groups="drop" ) %>%
+  pivot_wider(    names_from=day, values_from=mean_expr )
+gene_ids <- expr_cluster$gene
+cluster_matrix <- expr_cluster %>%  dplyr::select(-gene) %>%
+  as.matrix()
+rownames(cluster_matrix) <- gene_ids
+
+gene_cor <- cor(  t(cluster_matrix),
+  use="pairwise.complete.obs" )
+hc <- hclust(  as.dist(1-gene_cor),
+  method="average" )
+gene_order <- gene_ids[hc$order]
+plot_lookup <- expr_long %>%  dplyr::select(gene,plot_name) %>%
+  distinct()
+
+plot_order <- plot_lookup$plot_name[
+  match(gene_order,plot_lookup$gene)]
+expr_long$plot_name <- factor(  expr_long$plot_name,
+  levels=plot_order )
+
+p <- ggplot(  expr_long, aes( x=day, y=expression, colour=day))+
+  geom_point( position=position_jitter(width=0.12,height=0  ),
+    size=2,    alpha=0.6  ) +
+  stat_summary(    aes(group=1), fun=mean,  geom="line",
+    colour="black",    linewidth=1.5,alpha=0.6) +
+  stat_summary(    fun=mean, geom="point",
+    colour="black", size=0.8  ) +
+  scale_colour_manual(    values=base_colors  ) +
+  facet_wrap(    ~plot_name,
+    ncol=15,    scales="free_y" ) +
+  labs(    x=NULL,
+    y="Normalised expression" ) + theme_bw() +
+  theme(  legend.position="none",
+    strip.background=element_blank(),
+    strip.text=element_text(size=3,face="bold"),
+    axis.text.x=element_text(size=12,angle=90,hjust=1,vjust=0.5),
+    axis.text.y=element_text(size=12),
+    axis.title.y=element_text(size=12),
+    panel.grid=element_blank(),
+    panel.spacing=unit(0.02,"lines")  )
+ggsave( "DE_gene_expression_panels.pdf", p,  width = 20,
+  height = 50,  dpi = 300, limitsize = F)
+ggsave(  "DE_gene_expression_panels.png", p,  width = 20,
+  height = 50,  dpi = 300, limitsize = FALSE,  bg = "white")
+
+#########
+
+pdf("ENSSSCT000000973541.pdf", height=6, width=8)
+plot_bootstrap(so2, "ENSSSCT000000973541.1", x_axis_angle = 90,
+               units="est_counts", color_by="condition")
+dev.off()
+
+# Spline model # "Does expression change over time in any non-linear way?"
+
+library(splines)
+fitsp <- lmFit(v, model.matrix(  ~ ns(day, df=3),  data=full))
+fitsp <- eBayes(fitsp, trend = T)
+res <- topTableF(fitsp ,  number=Inf,  p.value = 1) # limma F-test
+dim(res) # XX DE
+write.csv(res, "spline.toptable.csv") # 29.5k transcripts 
+head(res[order(res$adj.P.Val), ])
+sig_spline <- subset(res, adj.P.Val < 0.05)  # 25,500 !!! transcripts 
+
+# plot ignificance-versus-effect-size plot 
+res$significant <- ifelse( res$adj.P.Val < 0.05,
+    "Significant", "Not" )
+spline1 <- ggplot( res, aes(  x = log10(F), y = -log10(adj.P.Val),
+        colour = significant    )) +
+    geom_point(alpha = 0.4) +    theme_bw()
+pdf("spline.pdf", width=7, height=7)
+print(spline1)
+dev.off()
+
+####### 5 Sleuth across genes ###########
+
+so2 <- sleuth_prep(s2c, target_mapping=t2g, aggregation_column='ens_gene',
+                  extra_bootstrap_summary=T, read_bootstrap_tpm=T)
+
+# Next, we will smooth the tpm per sample using a parameter
+# based on our model - so here we estimate parameters for
+# response error measurement (full) model
+# this is our alternative model with DE
+so2 <- sleuth_fit(  so2, ~ ns(condition, df=3),  'full')
+
+# get our null model r where the isoform levels are equal
+so2 <- sleuth_fit(  so2, ~1, 'reduced' )
+so2 <- sleuth_lrt(  so2,  'reduced', 'full')
+# we compare our null and alternative models
+models(so2) # check model details
+
+# differential analysis using a likelihood ratio test (LRT)
+sr <- sleuth_results(so2, 'reduced:full', 'lrt', show_all=F)
+sr2 <- dplyr::filter(sr, qval <= 0.05)  
+str(sr2)
+write.csv(sr2, "sleuth_DE.csv") # 4793 DE genes
+##########
+
+library(readxl)
+# list genes with multiple transcripts #
+
+all_de <- read_xlsx("TABLES/all.DE.xlsx") # Read Excel file
+gene_counts <- all_de %>% count(Gene_ID, name = "n_transcripts")
+multi_transcript_genes <- gene_counts %>% filter(n_transcripts > 1)
+multi_transcript_de <- all_de %>% # Extract all rows for those genes
+  semi_join(multi_transcript_genes, by = "Gene_ID") %>% arrange(Gene_ID)
+View(multi_transcript_de)
+write.csv(  multi_transcript_de,  "all.DE.multiple_transcripts.csv",
+  row.names = FALSE )
+
+write.csv( unique(multi_transcript_de$Gene), "all.DE.multiple_txn.csv",
+  row.names = FALSE )
+
+
+
+
+
+
+
