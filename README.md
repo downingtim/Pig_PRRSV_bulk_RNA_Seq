@@ -11,13 +11,23 @@ Pig_PRRSV_bulk_RNA_Seq/
 
 ├── FIGURES/
 │   ├── PC1.PC2.pdf
-│   └── PC3.PC4.pdf
+│   ├── PC3.PC4.pdf
+│   ├── DE_gene_expression_panels.pdf
+│   ├── Mean_gene_expression_by_timepoint.pdf
+│   ├── STRING_PPIN.pdf
+│   └── STRING_PPIN2.pdf
 │
 ├── TABLES/
-│   └── DE_transcripts.csv
+│   ├── all.DE.csv
+│   ├── all.DE.multiple_transcripts.csv
+│   ├── PigGenes_correlated_with_viral_trajectory.csv
+│   ├── STRING_nodes.csv
+│   ├── STRING_edges.csv
+│   ├── sleuth_DE.csv
+│   └── KEGG_GSEA_All_Timepoints.csv
 │
 ├── scripts/
-│   ├── BSP462_PRRSV.Rmd
+│   ├── limma.R
 │   ├── Snakefile.kallisto
 │   ├── Snakemake.qc
 │   ├── abundanceplot.R
@@ -321,6 +331,42 @@ For each differentially expressed pig transcript:
 3. Pearson correlation coefficients were calculated.
 
 This analysis was used to identify transcripts whose kinetics most closely followed PRRSV abundance over the infection time course.
+
+
+---
+
+
+Protein-Protein Interaction Network Analysis
+
+Differentially expressed genes were mapped to the STRING database for Sus scrofa.
+
+The workflow:
+
+Maps DE genes to STRING identifiers
+Retrieves high-confidence interactions
+Constructs protein-protein interaction networks
+Identifies highly connected hub genes
+Extracts the largest connected component
+
+Outputs:
+
+STRING_edges.csv STRING_nodes.csv STRING_nodes_largest_component.csv STRING_PPIN.pdf STRING_PPIN.png STRING_PPIN2.pdf STRING_PPIN2.png
+
+
+---
+
+
+Gene Set Enrichment Analysis
+
+KEGG pathway enrichment is performed using ClusterProfiler.
+
+Genes are ranked according to aggregate differential expression statistics across all timepoints.
+
+Outputs:
+
+KEGG_GSEA_All_Timepoints.csv KEGG_GSEA_All_Timepoints.pdf
+
+This analysis identifies biological pathways enriched among genes responding to PRRSV infection.
 
 ---
 
