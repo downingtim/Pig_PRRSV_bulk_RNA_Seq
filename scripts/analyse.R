@@ -2,171 +2,149 @@ library(ggplot2)
 library(cowplot)
 library(dplyr)
 library(tidyr)
-library(limma)
-library(splines)
 
 # -------------------------------
-# Settings
+# Settings (1 to 14,999 bp)
 # -------------------------------
-xlims <- c(0, 15010)
-xbreaks <- seq(0, 16000, 1000)
+xlims <- c(1, 14999)
+xbreaks <- seq(0, 15000, 1000)
 input_folder <- "DEPTH/"
 
 # -------------------------------
-# CDS annotation
+# CDS Annotation & Alternating Tracks
 # -------------------------------
 cds <- data.frame(
-  start = c(105, 7277, 11679, 11684, 12287, 12829, 13377, 13382, 13970, 14481),
-  end   = c(7295,11668,12428,11896,13084,13380,13982,13513,14491,14867),
-  name  = c("1a replicase","1b replicase / RdRp","GP2 envelope",
-            "GP2b envelope","GP3 envelope","GP4 envelope",
-            "GP5 envelope","ORF5a","membrane envelope","nucleocapsid")
+  start = c(105, 1274,  7277, 11679, 11684, 12287, 12829, 13377, 13382, 13970, 14481, 14974),
+  end   = c(7295, 4648, 11668, 12428, 11896, 13084, 13380, 13982, 13513, 14491, 14867, 14975),
+  name  = c("1a replicase", "nsp2", "RdRp", "GP2",
+            "GP2b", "GP3", "GP4",            "GP5", "", "M", "N", "")
 )
-cds$mid <- (cds$start + cds$end)/2
+
+# Remove unnamed annotations and calculate midpoints
+cds <- cds[cds$name != "", ]
+cds$mid <- (cds$start + cds$end) / 2
+
+# Assign alternating tracks (1 & 2) so overlapping genes stack cleanly
+cds$track <- rep(c(1, 2), length.out = nrow(cds))
 
 # -------------------------------
-# Sample mapping
+# Sample Mapping
 # -------------------------------
 sample_info <- data.frame(
-  sample = c("P22-4042","P22-4050","P22-4032",
-             "P22-4044","P22-4045","P22-4040",
-             "P22-4043","P22-4048","P22-4052",
-             "P22-4038","P22-4051","P22-4039",
-             "P22-4035","P22-4047","P22-4041",
-             "P22-4037","P22-4036","P22-4046",
-             "P22-4033","P22-4034","P22-4049"),
-  condition = c(rep(3,3), rep(7,3), rep(10,3),
-                rep(14,3), rep(21,3), rep(28,3), rep(35,3))
+  sample = c("P22-4042", "P22-4050", "P22-4032",
+             "P22-4044", "P22-4045", "P22-4040",
+             "P22-4043", "P22-4048", "P22-4052",
+             "P22-4038", "P22-4051", "P22-4039",
+             "P22-4035", "P22-4047", "P22-4041",
+             "P22-4037", "P22-4036", "P22-4046",
+             "P22-4033", "P22-4034", "P22-4049"),
+  condition = c(rep(3, 3), rep(7, 3), rep(10, 3),
+                rep(14, 3), rep(21, 3), rep(28, 3), rep(35, 3))
 )
 
 # -------------------------------
-# Sliding window
+# Sliding Window (Spans 1 to 14,999 bp)
 # -------------------------------
-compute_sliding <- function(df, window_size=1000, step_size=100) {
-  if(nrow(df) < window_size) return(NULL)
-  starts <- seq(1, max(df$pos) - window_size, by=step_size)
-
-  means <- sapply(starts, function(s) {
-    subset <- df[df$pos >= s & df$pos < (s + window_size), "depth"]
-    if(length(subset) > 0) mean(subset) else NA  })
-
-  out <- data.frame(pos = starts + window_size/2,
-                    depth = means)
-  out <- out[complete.cases(out), ]
-  if(nrow(out)==0) return(NULL)
-
-  return(out)
+compute_sliding <- function(df, window_size=500, step_size=100, min_pos=1, max_pos=14999) {
+  if(nrow(df) < 10) return(NULL)
+  
+  starts <- seq(min_pos, max_pos, by=step_size)
+  
+  sw <- lapply(starts, function(s) {
+    w_start <- max(min_pos, s - window_size/2)
+    w_end   <- min(max_pos, s + window_size/2)
+    
+    subset <- df[df$pos >= w_start & df$pos <= w_end, "depth"]
+    
+    if(length(subset) > 0) {
+      data.frame(pos = s, depth = mean(subset, na.rm=TRUE))
+    } else {
+      NULL
+    }
+  }) %>% bind_rows()
+  
+  return(sw)
 }
 
+# -------------------------------
+# Data Import & Processing
+# -------------------------------
 files <- list.files(input_folder, pattern="\\.txt$", full.names=TRUE)
 
 all_data <- lapply(files, function(file) {
   df <- read.table(file, sep="\t", header=FALSE,
-                   col.names=c("chrom","pos","depth"))
+                   col.names=c("chrom", "pos", "depth"))
   df <- df[complete.cases(df), ]
-  sw <- compute_sliding(df)
+  
+  # Pad missing positions from 1 to 14,999 bp
+  full_pos <- data.frame(pos = 1:14999)
+  df <- merge(full_pos, df[, c("pos", "depth")], by="pos", all.x=TRUE)
+  df$depth[is.na(df$depth)] <- 0
+  
+  sw <- compute_sliding(df, window_size=500, step_size=100, min_pos=1, max_pos=14999)
   if(is.null(sw)) return(NULL)
-  sample_name <- gsub("\\.PV173709\\.fasta\\.depth\\.txt$", "",
-                      basename(file))
-  sample_name <- gsub("_","-",sample_name)
-
+  
+  sample_name <- gsub("\\.PV173709\\.fasta\\.depth\\.txt$", "", basename(file))
+  sample_name <- gsub("_", "-", sample_name)
   sw$sample <- sample_name
   return(sw)
 }) %>% bind_rows()
 
 all_data <- merge(all_data, sample_info, by="sample")
 all_data <- all_data[all_data$depth > 0, ]
-all_data$log_depth <- log10(all_data$depth)
-
-gene_expr <- lapply(1:nrow(cds), function(i) {
-  region <- cds[i,]
-  sub <- all_data %>%
-    filter(pos >= region$start & pos <= region$end)
-
-  sub %>%    group_by(sample) %>%
-    summarise(expr = mean(log_depth), .groups="drop") %>%
-    mutate(gene = region$name) }) %>% bind_rows()
-
-write.csv(gene_expr, "gene_expression_log.csv", row.names=FALSE)
-
-expr_mat <- gene_expr %>% pivot_wider(names_from=sample, values_from=expr)
-
-expr_mat <- as.data.frame(expr_mat)
-rownames(expr_mat) <- expr_mat$gene
-expr_mat$gene <- NULL
-expr_mat_norm <- normalizeBetweenArrays(expr_mat)
-write.csv(expr_mat_norm, "limma_input_matrix.csv")
+all_data$log_depth <- log10(all_data$depth+1)
 
 # -------------------------------
-# Spline model
+# Global Y-Axis Parameters
 # -------------------------------
-sample_table <- sample_info
-sample_table <- sample_table[
-  match(colnames(expr_mat_norm), sample_table$sample), ]
+global_ymax <- max(all_data$log_depth, na.rm=TRUE)
+# Calculate uniform round breaks for the data portion of the axis
+ybreaks <- seq(0, floor(global_ymax), by=1)
 
-design <- model.matrix(~ ns(condition, df=3), data=sample_table)
-
-fit <- lmFit(expr_mat_norm, design)
-fit <- eBayes(fit)
-
-res <- topTable(fit, number=Inf)
-write.csv(res, "limma_results_spline.csv")
-
-anova_res <- topTableF(fit, number=Inf)
-write.csv(anova_res, "limma_spline_ANOVA.csv")
-
-plot_condition <- function(df, cond, yvar, ylabel) {
+# -------------------------------
+# Plotting Function (Uniform Y Scale)
+# -------------------------------
+plot_condition <- function(df, cond, yvar, ylabel, ymax_data) {
   sub <- df[df$condition == cond, ]
-  if(nrow(sub)==0) return(NULL)
-  ymax <- max(sub[[yvar]], na.rm=TRUE)
-  label_y <- rep(c(ymax*1.1, ymax*0.95), length.out=nrow(cds))
+  if(nrow(sub) == 0) return(NULL)
+
+  # Dynamic height placement for CDS tracks based on uniform global_ymax
+  cds_plot <- cds
+  cds_plot$ymin <- ifelse(cds_plot$track == 1, ymax_data * 1.05, ymax_data * 1.20)
+  cds_plot$ymax <- ifelse(cds_plot$track == 1, ymax_data * 1.15, ymax_data * 1.30)
+  cds_plot$mid_y <- (cds_plot$ymin + cds_plot$ymax) / 2
 
   ggplot(sub, aes(x=pos, y=.data[[yvar]], colour=sample)) +
-    geom_rect(data=cds,
-              aes(xmin=start, xmax=end,
-	      ymin=ymax*0.9, ymax=ymax*1.15),
-              inherit.aes=FALSE,  fill="grey70", alpha=0.1) +
+    # Staggered grey boxes for gene bounds
+    geom_rect(data=cds_plot, aes(xmin=start, xmax=end, ymin=ymin, ymax=ymax),
+              inherit.aes=FALSE, fill="grey80", color="grey40", alpha=0.8) +
+    # Sliding window depth line plot
     geom_line(linewidth=1.2, alpha=0.5) +
-    geom_label(data=cds,  aes(x=mid, y=label_y, label=name),
-        inherit.aes=F, size=2, fill="black", colour="white") +
-    scale_x_continuous(limits=xlims, breaks=xbreaks,
-                       labels=function(x) x/1000) +
-    expand_limits(y=ymax*1.2) +
-    labs(title=paste0("D",cond),
+    # Gene names centered inside grey boxes
+    geom_text(data=cds_plot, aes(x=mid, y=mid_y, label=name),
+              inherit.aes=FALSE, size=2, fontface="bold", colour="black") +
+    scale_x_continuous(limits=xlims, breaks=xbreaks, labels=function(x) x/1000) +
+    # Fixed y-limits and uniform tick breaks across every panel
+    scale_y_continuous(limits=c(0, ymax_data * 1.35), breaks=ybreaks) +
+    labs(title=paste0("D", cond),
          x="Genomic position (Kb)",
-         y=ylabel,         colour="Sample") +
-    theme_minimal(base_size=9) }
+         y=ylabel, colour="Sample") +
+    theme_minimal(base_size=9) +
+    theme(panel.grid.minor = element_blank())
+}
 
+# -------------------------------
+# Generate Output
+# -------------------------------
 conds <- sort(unique(sample_info$condition))
 
-# RAW
+# Generate plots with uniform ymax
 plots_raw <- lapply(conds, function(c)
-  plot_condition(all_data, c, "log_depth", "Log10-scaled depth"))
+  plot_condition(all_data, c, "log_depth", "Log10-scaled depth", ymax_data = global_ymax))
+
 panel_raw <- plot_grid(plotlist=plots_raw, ncol=1)
-plot_df <- gene_expr %>% left_join(sample_info, by="sample")
-top_genes <- rownames(anova_res)[1:6]
 
-p_spline <- ggplot(
-  plot_df %>% filter(gene %in% top_genes),
-  aes(x=condition, y=expr)) +
-  geom_point(aes(color=sample)) +
-  geom_smooth(method="lm",
-              formula = y ~ ns(x,3),
-              se=FALSE,   colour="black",
-              linewidth=1) +
-  facet_wrap(~gene, scales="free_y") +
-  theme_minimal() +
-  labs(x="Day", y="Expression (log depth)")
-
-#ggsave("spline_gene_trajectories.png",       p_spline,
-#       width=10, height=6, dpi=400)
-
-# -------------------------------
-# Combine output panels
-# -------------------------------
+# Save
 final_plot <- panel_raw
-
-ggsave("depth_plot.png",
-       final_plot,
-       width=6, height=12,
+ggsave("depth_plot.png", final_plot, width=6, height=12,
        dpi=400, bg="white")
